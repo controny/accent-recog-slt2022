@@ -12,21 +12,23 @@ __set_seed: !apply:torch.manual_seed [!ref <seed>]
 # Set up folders for reading from and writing to
 # Dataset will be downloaded to the `data_folder`
 # data_folder: !PLACEHOLDER # e.g. /localscratch/common_voice_kpd/
-data_folder: /remote/idiap.svm/resource.dataset04/CommonVoice
-csv_prepared_folder: ../../data/en_cv7
-output_folder: !ref results/W2V2/xlsr-53-<avg_pool_class>/<seed>
+data_folder: data/speech_accent/truncated_recordings
+csv_prepared_folder: data/speech_accent
+output_folder: !ref results/W2V2/xlsr-sa-<avg_pool_class>/<seed>
 save_folder: !ref <output_folder>/save
 rir_folder: !ref data/rir_folder
 train_log: !ref <output_folder>/train_log.txt
 device: 'cuda:0'
 skip_prep: True
 # max audio lenth allowed, higher than this is dropped
-avoid_if_longer_than: 10.0
+avoid_if_longer_than: 11.0
 
-# URL for the biggest Fairseq english wav2vec2 model.
-wav2vec2_hub: "facebook/wav2vec2-large-xlsr-53" # dimension of this model is 1024
+grad_accumulation_factor: 1
+
+# URL for the base Fairseq english wav2vec2 model.
+wav2vec2_hub: "facebook/wav2vec2-base" #dimension of this model is 768
 # Model parameters
-encoder_dim: 1024
+encoder_dim: 768
 
 # The train logger writes training statistics to a file, as well as stdout.
 train_logger: !new:speechbrain.utils.train_logger.FileTrainLogger
@@ -36,9 +38,11 @@ error_stats: !name:speechbrain.utils.metric_stats.MetricStats
     metric: !name:speechbrain.nnet.losses.classification_error
         reduction: batch
 
+acc_computer: !name:speechbrain.utils.Accuracy.AccuracyStats
 # Training Parameters
 sample_rate: 16000
-number_of_epochs: 10
+number_of_epochs: 30
+batch_size: 32
 
 # set to TRUE to freeze all wav2vec2
 freeze_wav2vec2: False
@@ -47,7 +51,7 @@ freeze_wav2vec2: False
 freeze_wav2vec2_conv: True
 
 # Number of accents
-n_accents: 21
+n_accents: 57
 
 # batch type of sorting
 sorting: random # sort the samples
@@ -55,7 +59,7 @@ sorting: random # sort the samples
 # This setup works well for RTX 3090 24GB GPU, adapts it to your needs.
 # Or turn it off (but training speed will decrease)
 dynamic_batching: True
-max_batch_len: 100 # XLSR is way bigger than w2v2-base, this works well
+max_batch_len: 600 # XLSR is way bigger than w2v2-base, this works well
 num_bucket: 200
 num_workers: 4
 
@@ -95,10 +99,14 @@ augmentation: !new:speechbrain.lobes.augment.TimeDomainSpecAugment
    sample_rate: !ref <sample_rate>
    speeds: [95, 100, 105]
 
+# Mean and std normalization of the input features
+mean_var_norm_input: !new:speechbrain.processing.features.InputNormalization
+    norm_type: sentence
+    std_norm: False
+
 # Model parameters
 activation: !name:torch.nn.GELU
 dnn_layers: 2
-dnn_neurons: 1024
 
 # front end Wav2vec2 - main model
 wav2vec2: !new:speechbrain.lobes.models.huggingface_wav2vec.HuggingFaceWav2Vec2
@@ -116,6 +124,11 @@ output_mlp: !new:speechbrain.nnet.linear.Linear
     n_neurons: !ref <n_accents>
     bias: False
 
+preout_mlp: !new:speechbrain.lobes.models.VanillaNN.VanillaNN
+   input_shape: [null, null, !ref <encoder_dim>]
+   activation: !ref <activation>
+   dnn_blocks: !ref <dnn_layers>
+   dnn_neurons: !ref <encoder_dim>
 # The first object passed to the Brain class is this "Epoch Counter"
 # which is saved by the Checkpointer so that training can be resumed
 # if it gets interrupted at any point.
@@ -129,9 +142,12 @@ modules:
     augmentation: !ref <augmentation>
     wav2vec2: !ref <wav2vec2>
     output_mlp: !ref <output_mlp>
+    preout_mlp: !ref <preout_mlp>
+    mean_var_norm_input: !ref <mean_var_norm_input>   
 
 model: !new:torch.nn.ModuleList
-   - [!ref <output_mlp>]
+    - [!ref <preout_mlp>, !ref <output_mlp>]
+
 
 # Additive Angular Margin
 # compute_cost: !new:speechbrain.nnet.losses.LogSoftmaxWrapper
@@ -141,13 +157,14 @@ model: !new:torch.nn.ModuleList
 
 # standard NLL loss
 compute_cost: !name:speechbrain.nnet.losses.nll_loss
+    label_smoothing: 0.1
 
 log_softmax: !new:speechbrain.nnet.activations.Softmax
     apply_log: True
 
 # Learning rates for normal optimizer and W2V2 model
-lr: 0.0001
-lr_wav2vec2: 0.00001
+lr: 0.001
+lr_wav2vec2: 0.0001
 
 # Optimizers class 
 opt_class: !name:torch.optim.Adam
@@ -176,6 +193,7 @@ checkpointer: !new:speechbrain.utils.checkpoints.Checkpointer
     recoverables:
         model: !ref <model>
         wav2vec2: !ref <wav2vec2>
-        lr_annealing_output: !ref <lr_annealing>
+        lr_annealing: !ref <lr_annealing>
         lr_annealing_wav2vec2: !ref <lr_annealing_wav2vec2>
         counter: !ref <epoch_counter>
+        normalizer_input: !ref <mean_var_norm_input>

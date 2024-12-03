@@ -12,13 +12,18 @@ Author
 import os
 import argparse
 import csv
+from tqdm import tqdm
+import asyncio
+
+os.environ['HF_HOME'] = '/work2/09849/gcyang/frontera/.cache/huggingface/'
 
 from datasets import load_dataset, load_from_disk
 
 import warnings
 warnings.filterwarnings("ignore")
 
-_COMMON_VOICE_FOLDER = "common_voice_11_0/common_voice_11_0.py"
+# _COMMON_VOICE_FOLDER = "common_voice_11_0/common_voice_11_0.py"
+_COMMON_VOICE_FOLDER = "common_voice_7_0/common_voice_7_0.py"
 
 def prepare_cv_from_hf(output_folder, language="en"):
     """ function to prepare the datasets in <output-folder> """
@@ -41,30 +46,34 @@ def prepare_cv_from_hf(output_folder, language="en"):
         common_voice[split] = ds
         
     for dataset in common_voice:
+        print(f'Processing {dataset}')
         csv_lines = []
         # Starting index
         idx = 0
-        for sample in common_voice[dataset]:
-            # get path and utt_id
-            mp3_path = sample['path']
-            utt_id = mp3_path.split(".")[-2].split("/")[-1]            
-            
-            # Create a row with metadata + transcripts
-            csv_line = [
-                idx,  # ID
-                utt_id,  # Utterance ID
-                mp3_path,  # File name
-                sample["locale"],
-                sample["accent"],
-                sample["age"],
-                sample["gender"],
-                sample["sentence"], # transcript
-            ]
+        for sample in tqdm(common_voice[dataset]):
+            try:
+                # get path and utt_id
+                mp3_path = sample['audio']['path']
+                utt_id = mp3_path.split(".")[-2].split("/")[-1]            
+                
+                # Create a row with metadata + transcripts
+                csv_line = [
+                    idx,  # ID
+                    utt_id,  # Utterance ID
+                    mp3_path,  # File name
+                    sample["locale"],
+                    sample["accent"],
+                    sample["age"],
+                    sample["gender"],
+                    sample["sentence"], # transcript
+                ]
 
-            # Adding this line to the csv_lines list
-            csv_lines.append(csv_line)
-            # Increment index
-            idx += 1
+                # Adding this line to the csv_lines list
+                csv_lines.append(csv_line)
+                # Increment index
+                idx += 1
+            except asyncio.TimeoutError as e:
+                print(f"Skipping sample due to error: {e}")
 
         # CSV column titles
         csv_header = ["idx", "utt_id", "mp3_path", "language", "accent", "age", "gender", "transcript"]
